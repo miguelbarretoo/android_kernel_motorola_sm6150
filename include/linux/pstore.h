@@ -189,6 +189,9 @@ struct pstore_info {
 	int		(*write_user)(struct pstore_record *record,
 				      const char __user *buf);
 	int		(*erase)(struct pstore_record *record);
+	ssize_t		(*read_user)(struct pstore_record *record,
+				      char __user *buf, size_t count,
+				      loff_t *pos);
 };
 
 /* Supported frontends */

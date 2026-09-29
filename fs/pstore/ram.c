@@ -35,6 +35,7 @@
 #include <linux/pstore_ram.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/uaccess.h>
 
 #define RAMOOPS_KERNMSG_HDR "===="
 #define MIN_MEM_SIZE 4096UL
@@ -470,6 +471,55 @@ static int notrace ramoops_pstore_write_user(struct pstore_record *record,
 	return -EINVAL;
 }
 
+/*
+ * Backport of upstream ram_console_read(), used by /proc/last_kmsg. The
+ * shadow copy is refreshed first so that the log of the running kernel is
+ * visible, not just the one left behind by the previous boot.
+ */
+static ssize_t ramoops_pstore_read_user(struct pstore_record *record,
+					char __user *buf, size_t count,
+					loff_t *pos)
+{
+	struct ramoops_context *cxt = record->psi->data;
+	struct persistent_ram_zone *prz;
+	const char *old;
+	size_t size, space;
+
+	/* Bail out without error if this is not the console zone. */
+	if (record->type != PSTORE_TYPE_CONSOLE)
+		return -EINVAL;
+
+	if (!cxt->cprz)
+		return -ENOMEM;
+
+	if (*pos < 0)
+		return -EINVAL;
+
+	if (!access_ok(VERIFY_READ, buf, count))
+		return -EFAULT;
+
+	prz = cxt->cprz;
+
+	persistent_ram_save_old(prz);
+
+	size = persistent_ram_old_size(prz);
+	old = persistent_ram_old(prz);
+	if (!size || !old)
+		return 0;
+
+	space = size - *pos;
+	if (!space || !count)
+		return 0;
+
+	space = min_t(size_t, count, space);
+	if (copy_to_user(buf, old + *pos, space))
+		return -EFAULT;
+
+	*pos += space;
+
+	return space;
+}
+
 static int ramoops_pstore_erase(struct pstore_record *record)
 {
 	struct ramoops_context *cxt = record->psi->data;
@@ -511,6 +561,7 @@ static struct ramoops_context oops_cxt = {
 		.write	= ramoops_pstore_write,
 		.write_user	= ramoops_pstore_write_user,
 		.erase	= ramoops_pstore_erase,
+		.read_user	= ramoops_pstore_read_user,
 	},
 };
 

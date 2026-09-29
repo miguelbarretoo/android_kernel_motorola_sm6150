@@ -28,6 +28,7 @@
 #include <linux/console.h>
 #include <linux/module.h>
 #include <linux/pstore.h>
+#include <linux/proc_fs.h>
 #ifdef CONFIG_PSTORE_ZLIB_COMPRESS
 #include <linux/zlib.h>
 #endif
@@ -894,3 +895,62 @@ static void pstore_timefunc(unsigned long dummy)
 
 module_param(backend, charp, 0444);
 MODULE_PARM_DESC(backend, "Pstore backend to use");
+
+/*
+ * /proc/last_kmsg, backported from upstream (4.18, "pstore: Add /proc/
+ * last_kmsg"). It hands out the console log kept by the backend without
+ * requiring the pstore filesystem to be mounted, and unlike the files in
+ * /sys/fs/pstore it also reflects what the running kernel just logged.
+ */
+static int pstore_last_kmsg_open(struct inode *inode, struct file *file)
+{
+	if (!psinfo || !psinfo->read_user)
+		return -ENODEV;
+
+	return 0;
+}
+
+static ssize_t pstore_last_kmsg_read(struct file *file, char __user *buf,
+				     size_t count, loff_t *pos)
+{
+	struct pstore_info *psi = psinfo;
+	struct pstore_record record;
+	ssize_t ret;
+
+	if (!psi || !psi->read_user)
+		return -EBADF;
+
+	if (*pos < 0)
+		return -EINVAL;
+
+	/*
+	 * Fake a record for the read; the metadata of whatever the backend
+	 * holds right now must not be disturbed.
+	 */
+	pstore_record_init(&record, psi);
+	record.type = PSTORE_TYPE_CONSOLE;
+	record.id = 0;
+	record.compressed = false;
+	record.count = 0;
+
+	down(&psi->buf_lock);
+	ret = psi->read_user(&record, buf, count, pos);
+	up(&psi->buf_lock);
+
+	return ret;
+}
+
+static const struct file_operations pstore_proc_fops = {
+	.owner	= THIS_MODULE,
+	.open	= pstore_last_kmsg_open,
+	.llseek	= default_llseek,
+	.read	= pstore_last_kmsg_read,
+};
+
+static int __init pstore_init(void)
+{
+	proc_create("last_kmsg", 0440, NULL, &pstore_proc_fops);
+
+	return 0;
+}
+module_init(pstore_init);
